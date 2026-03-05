@@ -3,7 +3,7 @@
 #include <cmath>
 #include <iostream>
 #include <chrono>
-#include <thread>
+#include <omp.h>
 
 // ---------------- Timing helpers ----------------
 using steady_clock_t = std::chrono::steady_clock;
@@ -38,6 +38,7 @@ inline double flux_prime(double u) { return u; }
 
 void step_lax_friedrichs(const std::vector<double>& u, std::vector<double>& u_new, double dt, double dx) {
     int N = (int)u.size();
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < N; ++i) {
         int im = periodic_index(i - 1, N);
         int ip = periodic_index(i + 1, N);
@@ -53,6 +54,7 @@ void step_leapfrog(const std::vector<double>& u_old,
                    double dt, double dx)
 {
     int N = (int)u.size();
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < N; ++i) {
         int im = periodic_index(i - 1, N);
         int ip = periodic_index(i + 1, N);
@@ -101,7 +103,7 @@ static void print_timing(const char* label, const TimingStats& s) {
 
 int main() {
     const double x_min   = 0.0;
-    const double x_max   = 40.0;
+    const double x_max   = 38.0;
     const int    N       = 20;
     const double dx      = (x_max - x_min) / (N - 1);
     const double dt      = 1.0;
