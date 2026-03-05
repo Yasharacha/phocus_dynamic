@@ -100,17 +100,13 @@ static void print_timing(const char* label, const TimingStats& s) {
 
 int main() {
     const double x_min   = 0.0;
-    const double x_max   = 40.0;
+    const double x_max   = 38.0;
     const int    N       = 20;      // Change this for meshpoint
     const double dx      = (x_max - x_min) / (N - 1);
-    
+
     const double C_target = 0.4;
     const double T_end = 25.0;     // fixed physical simulation horizon
 
-    // const int    n_steps = 25;
-    // const double dt      = 1.0; // Fixed
-
-    
     std::vector<double> x(N);
     for (int i = 0; i < N; ++i) x[i] = x_min + i * dx;
 
@@ -126,10 +122,9 @@ int main() {
     // const int    n_steps = static_cast<int>(std::ceil(T_end / dt_raw));
     // const double dt = T_end / n_steps;  // exact end time
 
-
     // TIME STEP POLICY
-    const int    n_steps = 1000;     // set to 100 / 200 / 500 per independent run
-    const double dt      = T_end / n_steps;
+    const int    n_steps = 25;
+    const double dt      = 1.0;
 
     double t = 0.0;
     for (int n = 0; n < n_steps; ++n) {

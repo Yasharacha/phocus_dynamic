@@ -97,8 +97,8 @@ double total_variation(const std::vector<double>& u) {
 }
 
 double initial_condition(double x) {
-    if (x < 15.0) return 0.015 * x * (15.0 - x); // >= 0 on [0,15]
-    else return 0.0;
+    if (x < 15.01) return -0.015 * x * (x - 15.0) + 1.0;
+    else return 1.0;
 }
 
 static void print_timing(const char* label, const TimingStats& s) {
@@ -116,17 +116,13 @@ int main() {
     std::cout << "START main\n" << std::flush;
 
     const double x_min   = 0.0;
-    const double x_max   = 40.0;
+    const double x_max   = 38.0;
     const int    N       = 20;      // Change this for meshpoint
     const double dx      = (x_max - x_min) / (N - 1);
-    
+
     const double C_target = 0.4;
     const double T_end = 25.0;     // fixed physical simulation horizon
 
-    // const int    n_steps = 25;
-    // const double dt      = 1.0; // Fixed
-
-    
     std::vector<double> x(N);
     for (int i = 0; i < N; ++i) x[i] = x_min + i * dx;
 
@@ -142,17 +138,14 @@ int main() {
     // for (double ui : u_lf) {
     //     max_speed = std::max(max_speed, std::abs(flux_prime(ui)));
     // }
-
     // const double dt_raw = C_target * dx / std::max(max_speed, 1e-14);
-
     // const int    n_steps = static_cast<int>(std::ceil(T_end / dt_raw));
     // const double dt      = T_end / n_steps;  // exact end time
     // ---------------------------------------------------------------------
 
-
     // TIME STEP POLICY
-    const int    n_steps = 1000;     // set to 100 / 200 / 500 per independent run
-    const double dt      = T_end / n_steps;
+    const int    n_steps = 40;
+    const double dt      = 0.5;
 
     double t = 0.0;
     for (int n = 0; n < n_steps; ++n) {

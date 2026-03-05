@@ -8,16 +8,16 @@
 using steady_clock_t = std::chrono::steady_clock;
 
 struct TimingStats {
-    double step_ms = 0.0;   // time spent in step_* kernel
-    double cfl_ms  = 0.0;   // time spent computing CFL
-    double tv_ms   = 0.0;   // time spent computing TV
+    double step_ms = 0.0;
+    double cfl_ms  = 0.0;
+    double tv_ms   = 0.0;
     double total_ms() const { return step_ms + cfl_ms + tv_ms; }
 };
 
 struct ScopedTimer {
-    steady_clock_t ::time_point t0;
+    steady_clock_t::time_point t0;
     double* accum_ms;
-    explicit ScopedTimer(double* a) : t0(steady_clock_t ::now()), accum_ms(a) {}
+    explicit ScopedTimer(double* a) : t0(steady_clock_t::now()), accum_ms(a) {}
     ~ScopedTimer() {
         auto t1 = steady_clock_t::now();
         *accum_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -32,12 +32,15 @@ inline int periodic_index(int i, int N) {
     return i;
 }
 
+// f(u) = ln(u),  u > 0
 inline double flux(double u) {
-    return u * u * u;          // u^3
+    return std::log(u);
 }
 
+// f'(u) = 1/u
 inline double flux_prime(double u) {
-    return 3.0 * u * u;        // 3u^2
+    if (u <= 0.0) return 0.0;  // guard against non-positive values
+    return 1.0 / u;
 }
 
 void step_lax_friedrichs(const std::vector<double>& u, std::vector<double>& u_new, double dt, double dx) {
@@ -66,12 +69,6 @@ void step_leapfrog(const std::vector<double>& u_old,
     }
 }
 
-double max_abs(const std::vector<double>& u) {
-    double m = 0.0;
-    for (double val : u) m = std::max(m, std::abs(val));
-    return m;
-}
-
 double compute_cfl(const std::vector<double>& u, double dt, double dx) {
     double max_speed = 0.0;
     for (double ui : u) {
@@ -90,11 +87,10 @@ double total_variation(const std::vector<double>& u) {
     return tv;
 }
 
+// Riemann-type IC with strictly positive values (required for log flux)
 double initial_condition(double x) {
-    if (x < 15.0) return 0.015 * x * (15.0 - x);
-    else return 0.0;
+    return (x < 15.0) ? 1.5 : 0.5;
 }
-
 
 static void print_timing(const char* label, const TimingStats& s) {
     double tot = s.total_ms();
@@ -108,35 +104,24 @@ static void print_timing(const char* label, const TimingStats& s) {
 }
 
 int main() {
-    const double x_min   = 0.0;
-    const double x_max   = 38.0;
-    const int    N       = 20;      // Change this for meshpoint
-    const double dx      = (x_max - x_min) / (N - 1);
-
-    const double C_target = 0.4;
-    const double T_end = 25.0;     // fixed physical simulation horizon
+    const double x_min = 0.0;
+    const double x_max = 38.0;
+    const int    N     = 20;
+    const double dx    = (x_max - x_min) / (N - 1);
+    const double T_end = 25.0;
 
     std::vector<double> x(N);
     for (int i = 0; i < N; ++i) x[i] = x_min + i * dx;
 
-    // ---------------- Lax–Friedrichs ----------------
+    // TIME STEP POLICY
+    const int    n_steps = 1000;
+    const double dt      = T_end / n_steps;
+
+    // ---------------- Lax-Friedrichs ----------------
     TimingStats lf_stats;
 
     std::vector<double> u_lf(N), u_lf_new(N);
     for (int i = 0; i < N; ++i) u_lf[i] = initial_condition(x[i]);
-
-    // MESHPOINT POLICY
-    // double max_speed = 0.0;
-    // for (double ui : u_lf) {
-    //     max_speed = std::max(max_speed, std::abs(flux_prime(ui)));
-    // }
-    // const double dt_raw = C_target * dx / std::max(max_speed, 1e-14);
-    // const int    n_steps = static_cast<int>(std::ceil(T_end / dt_raw));
-    // const double dt      = T_end / n_steps;  // exact end time
-
-    // TIME STEP POLICY
-    const int    n_steps = 25;
-    const double dt      = 0.625;
 
     double t = 0.0;
     for (int n = 0; n < n_steps; ++n) {
