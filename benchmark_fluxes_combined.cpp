@@ -166,6 +166,27 @@ struct LogFlux {
     }
 };
 
+struct FloodWaveFlux {
+    static double flux(double u) {
+        double up = std::max(u, 0.0);
+        return up * std::sqrt(up);
+    }
+
+    static double flux_prime(double u) {
+        if (u <= 0.0) return 0.0;
+        return 1.5 * std::sqrt(u);
+    }
+
+    static double initial_condition(double x) {
+        if (x < 15.01) return -0.015 * x * (x - 15.0) + 1.0;
+        return 1.0;
+    }
+
+    static FluxConfig config() {
+        return {"floodWave", 0.0, 38.0, 0.5, 30};
+    }
+};
+
 struct TrilinearFlux {
     static double flux(double u) {
         return -std::max(-u, 0.0) + std::max(u - 1.0, 0.0);
@@ -699,13 +720,17 @@ int main(int argc, char** argv) {
         benchmark_flux<LogFlux>(csv, n_values, thread_values, reps);
         ran_any_flux = true;
     }
+    if (!flux_filter || *flux_filter == "floodWave") {
+        benchmark_flux<FloodWaveFlux>(csv, n_values, thread_values, reps);
+        ran_any_flux = true;
+    }
     if (!flux_filter || *flux_filter == "trilinear") {
         benchmark_flux<TrilinearFlux>(csv, n_values, thread_values, reps);
         ran_any_flux = true;
     }
 
     if (!ran_any_flux) {
-        std::cerr << "Unknown flux selection. Use --flux buckleyLeverett, cubic, burgers, lwr, log, or trilinear.\n";
+        std::cerr << "Unknown flux selection. Use --flux buckleyLeverett, cubic, burgers, lwr, log, floodWave, or trilinear.\n";
         return 1;
     }
 
