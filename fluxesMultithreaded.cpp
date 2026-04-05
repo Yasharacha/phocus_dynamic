@@ -66,7 +66,11 @@ void step_leapfrog(const std::vector<double>& u_old,
 
 double max_abs(const std::vector<double>& u) {
     double m = 0.0;
-    for (double val : u) m = std::max(m, std::abs(val));
+    int N = (int)u.size();
+    #pragma omp parallel for reduction(max:m) schedule(static)
+    for (int i = 0; i < N; ++i) {
+        m = std::max(m, std::abs(u[i]));
+    }
     return m;
 }
 
@@ -78,6 +82,7 @@ double compute_cfl(const std::vector<double>& u, double dt, double dx) {
 double total_variation(const std::vector<double>& u) {
     int N = (int)u.size();
     double tv = 0.0;
+    #pragma omp parallel for reduction(+:tv) schedule(static)
     for (int i = 0; i < N; ++i) {
         int ip = periodic_index(i + 1, N);
         tv += std::abs(u[ip] - u[i]);
@@ -126,7 +131,7 @@ int main() {
 
         double CFL = 0.0, TV = 0.0;
         { ScopedTimer timer(&lf_stats.cfl_ms);
-          CFL = compute_cfl(u_lf, dt, dx);
+          CFL = compute_cfl(u_lf_new, dt, dx);
         }
         { ScopedTimer timer(&lf_stats.tv_ms);
           TV = total_variation(u_lf_new);
@@ -159,7 +164,7 @@ int main() {
 
         double CFL = 0.0, TV = 0.0;
         { ScopedTimer timer(&lfrog_stats.cfl_ms);
-          CFL = compute_cfl(u, dt, dx);
+          CFL = compute_cfl(u_new, dt, dx);
         }
         { ScopedTimer timer(&lfrog_stats.tv_ms);
           TV = total_variation(u_new);
@@ -167,7 +172,8 @@ int main() {
 
         t += dt;
 
-        std::cout << "[Leapfrog] step " << n+1 << ", t=" << t << ", CFL=" << CFL << ", TV=" << TV << "\n";
+        std::cout << "[Leapfrog] step " << n+1 << ", t=" << t
+                  << ", CFL=" << CFL << ", TV=" << TV << "\n";
 
         u_old.swap(u);
         u.swap(u_new);
