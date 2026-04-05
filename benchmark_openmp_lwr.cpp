@@ -14,7 +14,7 @@ inline int periodic_index(int i, int N) {
     return i;
 }
 
-inline double flux(double u) { return 0.5 * u * u; }
+inline double flux(double u) { return u * (1.0 - u); }
 
 double initial_condition(double x) {
     if (x < 15.01) return -0.015 * x * (x - 15.0);
