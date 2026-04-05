@@ -1,0 +1,22 @@
+# Compiled binaries
+*.exe
+*.o
+*.out
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+plotenv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

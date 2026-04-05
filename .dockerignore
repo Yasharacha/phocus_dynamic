@@ -1,0 +1,8 @@
+*.exe
+*.o
+plots/
+results/
+.git
+__pycache__
+*.pyc
+log
