@@ -1,0 +1,13 @@
+flux,scheme,N,best_omp_threads,serial_total_ms,best_omp_total_ms,simd_total_ms,best_omp_speedup_pct,simd_speedup_pct
+trilinear,lax_friedrichs,20,1,0.0129,1.098,0.0127333,-8411.63,1.29199
+trilinear,lax_friedrichs,1000,1,0.0912667,0.627267,0.0842,-587.29,7.74288
+trilinear,lax_friedrichs,10000,1,0.857233,2.2571,0.830833,-163.301,3.07967
+trilinear,lax_friedrichs,100000,8,8.66127,10.8039,8.07053,-24.7377,6.8204
+trilinear,lax_friedrichs,500000,20,31.992,19.3292,30.1667,39.581,5.70559
+trilinear,lax_friedrichs,1000000,16,64.1736,25.497,63.5211,60.2688,1.01688
+trilinear,leapfrog,20,1,0.0124333,1.0432,0.0118,-8290.35,5.09383
+trilinear,leapfrog,1000,1,0.0856333,0.6136,0.0783,-616.543,8.56364
+trilinear,leapfrog,10000,1,0.820867,2.21337,0.758533,-169.638,7.5936
+trilinear,leapfrog,100000,8,21.3024,11.3495,21.4112,46.722,-0.51074
+trilinear,leapfrog,500000,16,29.721,18.0287,28.4357,39.34,4.32444
+trilinear,leapfrog,1000000,16,60.5269,25.4409,62.7074,57.9676,-3.60259

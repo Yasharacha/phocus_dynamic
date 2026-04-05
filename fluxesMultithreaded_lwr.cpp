@@ -33,8 +33,8 @@ inline int periodic_index(int i, int N) {
     return i;
 }
 
-inline double flux(double u) { return 0.5 * u * u; }
-inline double flux_prime(double u) { return u; }
+inline double flux(double u) { return u * (1.0 - u); }
+inline double flux_prime(double u) { return (1.0 - 2.0 * u); }
 
 void step_lax_friedrichs(const std::vector<double>& u, std::vector<double>& u_new, double dt, double dx) {
     int N = (int)u.size();
@@ -66,23 +66,18 @@ void step_leapfrog(const std::vector<double>& u_old,
 
 double max_abs(const std::vector<double>& u) {
     double m = 0.0;
-    int N = (int)u.size();
-    #pragma omp parallel for reduction(max:m) schedule(static)
-    for (int i = 0; i < N; ++i) {
-        m = std::max(m, std::abs(u[i]));
-    }
+    for (double val : u) m = std::max(m, std::abs(flux_prime(val)));
     return m;
 }
 
 double compute_cfl(const std::vector<double>& u, double dt, double dx) {
-    double umax = max_abs(u);
-    return umax * dt / dx;
+    double amax = max_abs(u);
+    return amax * dt / dx;
 }
 
 double total_variation(const std::vector<double>& u) {
     int N = (int)u.size();
     double tv = 0.0;
-    #pragma omp parallel for reduction(+:tv) schedule(static)
     for (int i = 0; i < N; ++i) {
         int ip = periodic_index(i + 1, N);
         tv += std::abs(u[ip] - u[i]);
@@ -131,7 +126,7 @@ int main() {
 
         double CFL = 0.0, TV = 0.0;
         { ScopedTimer timer(&lf_stats.cfl_ms);
-          CFL = compute_cfl(u_lf_new, dt, dx);
+          CFL = compute_cfl(u_lf, dt, dx);
         }
         { ScopedTimer timer(&lf_stats.tv_ms);
           TV = total_variation(u_lf_new);
@@ -164,7 +159,7 @@ int main() {
 
         double CFL = 0.0, TV = 0.0;
         { ScopedTimer timer(&lfrog_stats.cfl_ms);
-          CFL = compute_cfl(u_new, dt, dx);
+          CFL = compute_cfl(u, dt, dx);
         }
         { ScopedTimer timer(&lfrog_stats.tv_ms);
           TV = total_variation(u_new);
@@ -172,8 +167,7 @@ int main() {
 
         t += dt;
 
-        std::cout << "[Leapfrog] step " << n+1 << ", t=" << t
-                  << ", CFL=" << CFL << ", TV=" << TV << "\n";
+        std::cout << "[Leapfrog] step " << n+1 << ", t=" << t << ", CFL=" << CFL << ", TV=" << TV << "\n";
 
         u_old.swap(u);
         u.swap(u_new);
