@@ -1,0 +1,7 @@
+flux,scheme,N,best_omp_threads,serial_total_ms,best_omp_total_ms,simd_total_ms,best_omp_speedup_pct,simd_speedup_pct
+log,lax_friedrichs,20,1,2.17617,16.6216,1.96923,-663.8,9.50908
+log,lax_friedrichs,1000,1,95.6202,275.504,95.19,-188.123,0.44994
+log,lax_friedrichs,10000,8,2374.2,1419.78,2268.18,40.1996,4.46542
+log,leapfrog,20,1,1.69337,18.0618,1.62967,-966.619,3.76174
+log,leapfrog,1000,1,87.289,256.725,88.9183,-194.11,-1.8666
+log,leapfrog,10000,8,2296.41,1307.86,2165.73,43.0476,5.69082
