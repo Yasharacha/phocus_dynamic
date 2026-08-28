@@ -1,0 +1,13 @@
+flux,scheme,N,best_omp_threads,serial_total_ms,best_omp_total_ms,simd_total_ms,best_omp_speedup_pct,simd_speedup_pct
+buckleyLeverett,lax_friedrichs,20,1,0.00916667,0.7562,0.00916667,-8149.45,0.0
+buckleyLeverett,lax_friedrichs,1000,1,0.0987333,0.557667,0.1125,-464.821,-13.9433
+buckleyLeverett,lax_friedrichs,10000,1,1.00033,2.2901,1.06517,-128.934,-6.48117
+buckleyLeverett,lax_friedrichs,100000,8,9.8068,13.1089,10.7912,-33.6715,-10.0379
+buckleyLeverett,lax_friedrichs,500000,20,51.9235,63.6295,74.5299,-22.5447,-43.5379
+buckleyLeverett,lax_friedrichs,1000000,20,112.995,68.7246,131.581,39.1792,-16.4483
+buckleyLeverett,leapfrog,20,1,0.00896667,0.602667,0.00906667,-6621.19,-1.11524
+buckleyLeverett,leapfrog,1000,1,0.102667,0.552267,0.110433,-437.922,-7.56494
+buckleyLeverett,leapfrog,10000,1,0.977533,2.32857,1.06407,-138.208,-8.85221
+buckleyLeverett,leapfrog,100000,8,15.0716,12.4708,16.4452,17.2567,-9.11337
+buckleyLeverett,leapfrog,500000,20,58.173,71.4863,92.8527,-22.8857,-59.6147
+buckleyLeverett,leapfrog,1000000,20,115.533,57.899,122.093,49.8854,-5.67805

@@ -20,3 +20,53 @@ plotenv/
 .idea/
 *.swp
 *.swo
+
+# ==========================================
+# Vitis Build Outputs & Binaries
+# ==========================================
+**/Debug/
+**/Release/
+*.elf
+*.o
+*.d
+*.a
+*.bak
+
+# ==========================================
+# Hardware / Vivado Generates (If in same repo)
+# ==========================================
+*.runs/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.sim/
+.Xil/
+vivado_pid*
+*.jou
+*.log
+*.dmp
+
+# ==========================================
+# Vitis Workspace / System Metadata
+# ==========================================
+.metadata/
+_ide/
+RemoteSystemsTempFiles/
+.sdk/
+webtalk/
+*.lock
+
+# ==========================================
+# Vitis HLS
+# ==========================================
+*.csolution/
+vivado_hls.app
+hls_actions.log
+
+# ==========================================
+# Unified Vitis IDE (Local Machine Absolute Paths)
+# ==========================================
+# Note: These contain absolute paths specific to your machine.
+# If collaborating, template these or generate them via scripts.
+vitis-comp.json
+app.yaml
