@@ -70,3 +70,4 @@ hls_actions.log
 # If collaborating, template these or generate them via scripts.
 vitis-comp.json
 app.yaml
+hls_out/

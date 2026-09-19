@@ -24,13 +24,15 @@
 
 #include "tv_cfl_kernel.hpp"
 
-extern "C" void tv_cfl_kernel(
-    const double* u,
-    double*       results,
+extern "C" int tv_cfl_kernel(
+    const real_t* u,
+    real_t*       results,
     int           N,
-    double        dt,
-    double        dx,
-    int           flux_id
+    real_t        dt,
+    real_t        dx,
+    int           flux_id,
+    real_t        tv_prev,
+    real_t        tol
 )
 {
     // ---- AXI4 master interfaces ----
@@ -38,7 +40,7 @@ extern "C" void tv_cfl_kernel(
     // num_read_outstanding=4:    up to 4 in-flight read transactions so
     //                            memory latency is fully hidden.
     #pragma HLS INTERFACE m_axi port=u       bundle=gmem0  \
-        depth=1048576                                       \
+        depth=131072                                       \
         max_read_burst_length=256                          \
         num_read_outstanding=4
     #pragma HLS INTERFACE m_axi port=results bundle=gmem1  \
@@ -51,27 +53,29 @@ extern "C" void tv_cfl_kernel(
     #pragma HLS INTERFACE s_axilite port=dt       bundle=control
     #pragma HLS INTERFACE s_axilite port=dx       bundle=control
     #pragma HLS INTERFACE s_axilite port=flux_id  bundle=control
+    #pragma HLS INTERFACE s_axilite port=tv_prev  bundle=control
+    #pragma HLS INTERFACE s_axilite port=tol      bundle=control
     #pragma HLS INTERFACE s_axilite port=return   bundle=control
 
     // ---- Partial accumulator arrays ----
     // ARRAY_PARTITION complete: each element lives in its own register so the
     // synthesis tool can address all TV_CFL_NUM_PARTIALS buckets in one cycle.
-    double tv_parts[TV_CFL_NUM_PARTIALS];
-    double cfl_parts[TV_CFL_NUM_PARTIALS];
+    real_t tv_parts[TV_CFL_NUM_PARTIALS];
+    real_t cfl_parts[TV_CFL_NUM_PARTIALS];
     #pragma HLS ARRAY_PARTITION variable=tv_parts  complete dim=1
     #pragma HLS ARRAY_PARTITION variable=cfl_parts complete dim=1
 
     // Initialise  unrolled so HLS emits parallel register writes.
     for (int p = 0; p < TV_CFL_NUM_PARTIALS; ++p) {
         #pragma HLS UNROLL
-        tv_parts[p]  = 0.0;
-        cfl_parts[p] = 0.0;
+        tv_parts[p]  = 0;
+        cfl_parts[p] = 0;
     }
 
     // Cache the first element so we can close the periodic boundary at the end
     // without a second memory read.
-    const double first_val = u[0];
-    double prev = first_val;
+    const real_t first_val = u[0];
+    real_t prev = first_val;
 
     // ---- Main streaming reduction ----
     // Reads u[1..N-1], computes:
@@ -87,16 +91,16 @@ extern "C" void tv_cfl_kernel(
     for (int i = 1; i < N; ++i) {
         #pragma HLS PIPELINE II=1
 
-        const double curr = u[i];
+        const real_t curr = u[i];
         const int    part = (i - 1) % TV_CFL_NUM_PARTIALS;
 
         // TV: accumulate |curr - prev| into the assigned partial bucket.
-        const double diff    = curr - prev;
-        const double abs_diff = (diff >= 0.0) ? diff : -diff;
+        const real_t diff    = curr - prev;
+        const real_t abs_diff = (diff >= 0) ? diff : -diff;
         tv_parts[part] += abs_diff;
 
         // CFL: update max |f'(prev)| in the same bucket.
-        const double speed = flux_prime_abs(prev, flux_id);
+        const real_t speed = flux_prime_abs(prev, flux_id);
         if (speed > cfl_parts[part]) cfl_parts[part] = speed;
 
         prev = curr;
@@ -109,26 +113,36 @@ extern "C" void tv_cfl_kernel(
     // Handle the wrap-around pair: (u[0], u[N-1]).
     // prev == u[N-1] at this point.
     {
-        const double wrap_diff = first_val - prev;
-        const double abs_wrap  = (wrap_diff >= 0.0) ? wrap_diff : -wrap_diff;
+        const real_t wrap_diff = first_val - prev;
+        const real_t abs_wrap  = (wrap_diff >= 0) ? wrap_diff : -wrap_diff;
         tv_parts[0] += abs_wrap;
 
-        const double last_speed = flux_prime_abs(prev, flux_id);
+        const real_t last_speed = flux_prime_abs(prev, flux_id);
         if (last_speed > cfl_parts[0]) cfl_parts[0] = last_speed;
     }
 
     // ---- Final tree reduction across partials ----
     // Unrolled: synthesiser builds a balanced adder/comparator tree in logic,
     // adding only a few extra cycles of latency after the main loop.
-    double tv_total  = 0.0;
-    double cfl_total = 0.0;
+    real_t tv_total  = 0;
+    real_t cfl_total = 0;
     for (int p = 0; p < TV_CFL_NUM_PARTIALS; ++p) {
         #pragma HLS UNROLL
         tv_total += tv_parts[p];
         if (cfl_parts[p] > cfl_total) cfl_total = cfl_parts[p];
     }
 
+    // ---- Violation check ----
+    // bit 0: CFL number > 1.
+    // bit 1: TV grew versus the previous check, beyond a relative tolerance.
+    //        A negative tv_prev disables this test (first call, no history).
+    const real_t cfl_number = cfl_total * dt / dx;   // dimensionless CFL number
+    int status = 0;
+    if (cfl_number > (real_t)1) status |= 1;
+    if (tv_prev >= (real_t)0 && tv_total > tv_prev * ((real_t)1 + tol)) status |= 2;
+
     // ---- Write results to global memory ----
     results[0] = tv_total;
-    results[1] = cfl_total * dt / dx;   // dimensionless CFL number
+    results[1] = cfl_number;
+    return status;   // 0 = OK; returned through the AXI-Lite control bank
 }

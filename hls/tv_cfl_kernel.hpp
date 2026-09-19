@@ -6,10 +6,20 @@
 //   TV  = sum_i |u[i+1] - u[i]|   (periodic: u[N] = u[0])
 //   CFL = max_i |f'(u[i])| * dt / dx
 
+// Working precision: double, matching the CPU solvers. Measured on the Ultra96
+// (ZU3EG) this uses ~28% of DSPs with II=1. Compile with -DTV_CFL_USE_FLOAT for
+// a float kernel (NOTE: flux_functions.hpp is still double-only, so that build
+// is not a true float design until flux_functions.hpp is converted to real_t).
+#ifdef TV_CFL_USE_FLOAT
+typedef float real_t;
+#else
+typedef double real_t;
+#endif
+
 #include "flux_functions.hpp"
 
 // Number of independent partial accumulators.
-// Must be >= FP add latency (~14 cycles for double on DSP48E2).
+// Must be >= FP add latency (~14 cycles for double, fewer for float).
 // 16 gives comfortable margin and maps cleanly to ARRAY_PARTITION complete.
 #define TV_CFL_NUM_PARTIALS 16
 
@@ -21,11 +31,16 @@
 //   dt           [in]  AXI4-Lite — time step
 //   dx           [in]  AXI4-Lite — grid spacing
 //   flux_id      [in]  AXI4-Lite — selects flux derivative (see FluxID enum)
-extern "C" void tv_cfl_kernel(
-    const double* u,
-    double*       results,
+//   tv_prev      [in]  AXI4-Lite — TV from the previous check; negative = no history
+//   tol          [in]  AXI4-Lite — relative tolerance for the "TV increased" test
+// Return value (AXI-Lite): violation bitmask. 0 = OK, bit0 = CFL > 1, bit1 = TV increased.
+extern "C" int tv_cfl_kernel(
+    const real_t* u,
+    real_t*       results,
     int           N,
-    double        dt,
-    double        dx,
-    int           flux_id
+    real_t        dt,
+    real_t        dx,
+    int           flux_id,
+    real_t        tv_prev,
+    real_t        tol
 );
