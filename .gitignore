@@ -71,3 +71,5 @@ hls_actions.log
 vitis-comp.json
 app.yaml
 hls_out/
+
+hls_out_*/

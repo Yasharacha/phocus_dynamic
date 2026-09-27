@@ -31,6 +31,11 @@ inline double flux_prime_abs(double u, int flux_id)
 {
 #pragma HLS INLINE
     double result = 0.0;
+#ifdef TV_CFL_FIXED_FLUX
+    // Build a single-flux kernel: fixing the flux at compile time lets the compiler fold
+    // the switch below to one branch, so only that flux's arithmetic is synthesized.
+    flux_id = TV_CFL_FIXED_FLUX;
+#endif
     switch (flux_id) {
         case FLUX_BURGERS: {
             result = (u >= 0.0) ? u : -u;   // |f'| = |u|

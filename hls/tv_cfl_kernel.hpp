@@ -18,6 +18,13 @@ typedef double real_t;
 
 #include "flux_functions.hpp"
 
+// One 128-bit AXI beat = two consecutive array elements (u[2j] in bits 63:0, u[2j+1] in
+// bits 127:64). The kernel's u port uses this type so it reads 2 doubles per clock.
+// Double-only design: real_t must be 8 bytes. Needs Vitis's ap_int.h on the include path.
+#include <ap_int.h>
+#include <stdint.h>
+typedef ap_uint<128> word_t;
+
 // Number of independent partial accumulators.
 // Must be >= FP add latency (~14 cycles for double, fewer for float).
 // 16 gives comfortable margin and maps cleanly to ARRAY_PARTITION complete.
@@ -35,7 +42,7 @@ typedef double real_t;
 //   tol          [in]  AXI4-Lite — relative tolerance for the "TV increased" test
 // Return value (AXI-Lite): violation bitmask. 0 = OK, bit0 = CFL > 1, bit1 = TV increased.
 extern "C" int tv_cfl_kernel(
-    const real_t* u,
+    const word_t* u,
     real_t*       results,
     int           N,
     real_t        dt,

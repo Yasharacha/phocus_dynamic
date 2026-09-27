@@ -24,8 +24,16 @@
 
 #include "tv_cfl_kernel.hpp"
 
+// Reinterpret 64 raw bits as a double (bit copy, no numeric conversion).
+static inline real_t bits_to_real(ap_uint<64> b)
+{
+    union { uint64_t i; real_t d; } cv;
+    cv.i = b.to_uint64();
+    return cv.d;
+}
+
 extern "C" int tv_cfl_kernel(
-    const real_t* u,
+    const word_t* u,
     real_t*       results,
     int           N,
     real_t        dt,
@@ -40,7 +48,7 @@ extern "C" int tv_cfl_kernel(
     // num_read_outstanding=4:    up to 4 in-flight read transactions so
     //                            memory latency is fully hidden.
     #pragma HLS INTERFACE m_axi port=u       bundle=gmem0  \
-        depth=131072                                       \
+        depth=65536                                        \
         max_read_burst_length=256                          \
         num_read_outstanding=4
     #pragma HLS INTERFACE m_axi port=results bundle=gmem1  \
@@ -57,6 +65,12 @@ extern "C" int tv_cfl_kernel(
     #pragma HLS INTERFACE s_axilite port=tol      bundle=control
     #pragma HLS INTERFACE s_axilite port=return   bundle=control
 
+    if (N <= 0) {
+        results[0] = 0;
+        results[1] = 0;
+        return 0;
+    }
+
     // ---- Partial accumulator arrays ----
     // ARRAY_PARTITION complete: each element lives in its own register so the
     // synthesis tool can address all TV_CFL_NUM_PARTIALS buckets in one cycle.
@@ -72,58 +86,58 @@ extern "C" int tv_cfl_kernel(
         cfl_parts[p] = 0;
     }
 
-    // Cache the first element so we can close the periodic boundary at the end
-    // without a second memory read.
-    const real_t first_val = u[0];
-    real_t prev = first_val;
-
-    // ---- Main streaming reduction ----
-    // Reads u[1..N-1], computes:
-    //   TV contribution:  |u[i] - u[i-1]|
-    //   CFL contribution: |f'(u[i-1])|
-    // using the partial accumulator indexed by (i-1) % NUM_PARTIALS.
-    //
-    // II=1 is achievable because:
-    //   1. tv_parts[p] and cfl_parts[p] are independent registers (full partition).
-    //   2. Each register is updated at most once every NUM_PARTIALS iterations,
-    //      which exceeds the ~14-cycle FP latency for double arithmetic.
-    //   3. The memory read u[i] is sequential → HLS issues burst transactions.
-    for (int i = 1; i < N; ++i) {
+    // ---- Main streaming reduction: two elements per clock ----
+    // The u port is 128 bits wide (pair_t = two doubles), so each iteration reads u[2j] and
+    // u[2j+1] in one beat. Per iteration:
+    //   TV : |u[2j]-u[2j-1]| + |u[2j+1]-u[2j]|   (first term skipped at j == 0)
+    //   CFL: max(|f'(u[2j])|, |f'(u[2j+1])|)
+    // Both go into bucket j % NUM_PARTIALS. The two-term TV sum is formed first, so each
+    // bucket still sees a single add per visit and II=1 holds (a bucket is revisited only
+    // every NUM_PARTIALS iterations, longer than the FP add latency).
+    // For odd N the last word's second element is ignored; the buffer needs one spare element.
+    const int  n_words = (N + 1) / 2;
+    const bool odd     = (N & 1) != 0;
+    real_t prev      = 0;   // last element of the previous word
+    real_t first_val = 0;   // u[0], kept for the periodic wrap
+    for (int j = 0; j < n_words; ++j) {
         #pragma HLS PIPELINE II=1
+        const word_t w  = u[j];                       // one 128-bit read = two doubles
+        const real_t e0 = bits_to_real(w.range(63, 0));
+        const real_t e1 = bits_to_real(w.range(127, 64));
+        const bool has_e1 = !(odd && (j == n_words - 1));
+        const int  part   = j % TV_CFL_NUM_PARTIALS;
 
-        const real_t curr = u[i];
-        const int    part = (i - 1) % TV_CFL_NUM_PARTIALS;
+        // TV
+        const real_t df0 = e0 - prev;
+        const real_t df1 = e1 - e0;
+        const real_t ad0 = (j == 0) ? (real_t)0 : ((df0 >= 0) ? df0 : -df0);
+        const real_t ad1 = has_e1 ? ((df1 >= 0) ? df1 : -df1) : (real_t)0;
+        tv_parts[part] += ad0 + ad1;
 
-        // TV: accumulate |curr - prev| into the assigned partial bucket.
-        const real_t diff    = curr - prev;
-        const real_t abs_diff = (diff >= 0) ? diff : -diff;
-        tv_parts[part] += abs_diff;
+        // CFL
+        const real_t sp0 = flux_prime_abs(e0, flux_id);
+        const real_t sp1 = has_e1 ? flux_prime_abs(e1, flux_id) : (real_t)0;
+        const real_t sp  = (sp1 > sp0) ? sp1 : sp0;
+        if (sp > cfl_parts[part]) cfl_parts[part] = sp;
 
-        // CFL: update max |f'(prev)| in the same bucket.
-        const real_t speed = flux_prime_abs(prev, flux_id);
-        if (speed > cfl_parts[part]) cfl_parts[part] = speed;
-
-        prev = curr;
-        // `curr` is the new `prev` for the next iteration.
-        // There is no dependency on tv_parts/cfl_parts here  only on `prev`,
-        // which is a scalar register with 1-cycle latency.
+        if (j == 0) first_val = e0;
+        prev = has_e1 ? e1 : e0;   // u[2j+1], or u[2j] for the odd last element
     }
 
     // ---- Periodic boundary closure ----
-    // Handle the wrap-around pair: (u[0], u[N-1]).
-    // prev == u[N-1] at this point.
+    // The wrap pair is (u[0], u[N-1]); prev == u[N-1] here. Every element's CFL speed was
+    // already taken inside the loop.
     {
         const real_t wrap_diff = first_val - prev;
         const real_t abs_wrap  = (wrap_diff >= 0) ? wrap_diff : -wrap_diff;
         tv_parts[0] += abs_wrap;
-
-        const real_t last_speed = flux_prime_abs(prev, flux_id);
-        if (last_speed > cfl_parts[0]) cfl_parts[0] = last_speed;
     }
 
-    // ---- Final tree reduction across partials ----
-    // Unrolled: synthesiser builds a balanced adder/comparator tree in logic,
-    // adding only a few extra cycles of latency after the main loop.
+    // ---- Final reduction across partials (sequential chain, see below) ----
+    // Unrolled, but NOT a tree: HLS keeps floating-point adds in source order, so the
+    // 16 TV adds form a dependent chain (one shared adder, ~5 cycles each). The CFL max
+    // is a similar compare chain. This runs once per call, ~100 cycles total, which is
+    // negligible next to the N-cycle main loop.
     real_t tv_total  = 0;
     real_t cfl_total = 0;
     for (int p = 0; p < TV_CFL_NUM_PARTIALS; ++p) {

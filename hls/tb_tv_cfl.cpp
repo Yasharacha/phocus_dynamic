@@ -74,7 +74,7 @@ static bool run_test(const TestCase& tc)
     std::vector<real_t> u_padded(131072, 0);
     std::copy(u.begin(), u.end(), u_padded.begin());
     // tv_prev < 0 disables the TV-increase test here; the flag tests below cover it.
-    const int status = tv_cfl_kernel(u_padded.data(), results, tc.N,
+    const int status = tv_cfl_kernel(reinterpret_cast<const word_t*>(u_padded.data()), results, tc.N,
                                      (real_t)tc.dt, (real_t)tc.dx, tc.flux_id,
                                      (real_t)-1, (real_t)1e-5);
 
@@ -127,7 +127,7 @@ static bool run_tv_flag_test(const char* label, double tv_prev_scale, int expect
     std::copy(u.begin(), u.end(), u_padded.begin());
     const double tv_prev = ref_total_variation(u) * tv_prev_scale;
     // dt = 0.01 keeps CFL well below 1 so only bit1 can be set.
-    const int status = tv_cfl_kernel(u_padded.data(), results, N, (real_t)0.01,
+    const int status = tv_cfl_kernel(reinterpret_cast<const word_t*>(u_padded.data()), results, N, (real_t)0.01,
                                      (real_t)dx_, FLUX_BURGERS, (real_t)tv_prev, (real_t)1e-5);
     const bool ok = (status == expect_bit1 * 2);
     printf("[%s] tv_prev=%.6f  flag kernel=%d  expected=%d  %s\n",
@@ -159,23 +159,36 @@ int main()
         {"floodwave",  FLUX_FLOOD_WAVE,       1000,    0.5,              dx(1000)},
         {"log      ",  FLUX_LOG,              1000,    0.025,            dx(1000)},
         {"burg-cfl<1", FLUX_BURGERS,          1000,    0.01,             dx(1000)},
+        // small and odd sizes exercise the 2-elements-per-beat tail and wrap logic
+        {"burg N=2 ",  FLUX_BURGERS,          2,       0.01,             dx(2)},
+        {"burg N=3 ",  FLUX_BURGERS,          3,       0.01,             dx(3)},
+        {"burg N=7 ",  FLUX_BURGERS,          7,       0.01,             dx(7)},
+        {"burg N=1001",FLUX_BURGERS,          1001,    0.01,             dx(1001)},
     };
 
     int n_pass = 0;
     int n_total = (int)(sizeof(tests) / sizeof(tests[0]));
 
     printf("=== tv_cfl_kernel C-sim testbench ===\n\n");
+    int n_run = n_total;
     for (int i = 0; i < n_total; ++i) {
+#ifdef TV_CFL_FIXED_FLUX
+        // Single-flux build: only cases for the compiled-in flux are meaningful.
+        if (tests[i].flux_id != TV_CFL_FIXED_FLUX) { --n_run; continue; }
+#endif
         if (run_test(tests[i])) ++n_pass;
         printf("\n");
     }
+    n_total = n_run;
 
+#if !defined(TV_CFL_FIXED_FLUX) || (TV_CFL_FIXED_FLUX == 0)   // these use the Burgers flux
     printf("--- TV-increase flag tests ---\n");
     n_total += 3;
     if (run_tv_flag_test("tv_prev = TV/2  ", 0.5, 1)) ++n_pass;   // TV doubled: violation
     if (run_tv_flag_test("tv_prev = TV    ", 1.0, 0)) ++n_pass;   // unchanged: within tolerance
     if (run_tv_flag_test("tv_prev = 2*TV  ", 2.0, 0)) ++n_pass;   // TV fell: fine
     printf("\n");
+#endif
 
     printf("Result: %d / %d tests passed\n", n_pass, n_total);
     return (n_pass == n_total) ? 0 : 1;
