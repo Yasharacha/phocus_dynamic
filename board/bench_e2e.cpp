@@ -46,11 +46,12 @@ static inline int pidx(int i, int N) {
     if (i >= N) return i - N;
     return i;
 }
-// CPU_FLUX_BUCKLEY selects Buckley-Leverett's f(u) and |f'(u)| in place of Burgers', so the CPU
-// side matches whichever flux the FPGA bitstream was built for. f(u) is what the solver step
-// uses; cpu_fprime_abs(u) is what the CFL check uses - this must match flux_functions.hpp's
-// FLUX_BUCKLEY_LEV case exactly for the FPGA-vs-CPU sanity check (TV/CFL agreement) to hold.
-#ifdef CPU_FLUX_BUCKLEY
+// CPU_FLUX_* selects a flux's f(u) and |f'(u)| in place of Burgers', so the CPU side matches
+// whichever flux the FPGA bitstream was built for. f(u) is what the solver step uses;
+// cpu_fprime_abs(u) is what the CFL check uses - both must match flux_functions.hpp's
+// corresponding FluxID case exactly for the FPGA-vs-CPU sanity check (TV/CFL agreement) to hold.
+// Define at most one of these when compiling; none selected defaults to Burgers.
+#if defined(CPU_FLUX_BUCKLEY)
 static inline double flux(double u) {
     const double u2 = u * u, a = 1.0 - u;
     const double denom = u2 + 0.25 * a * a;
@@ -63,6 +64,17 @@ static inline double cpu_fprime_abs(double u) {
     const double fp = 0.5 * u * (1.0 - u) / (denom * denom);
     return std::fabs(fp);
 }
+#elif defined(CPU_FLUX_FLOODWAVE)
+// f(u) = max(u,0)^1.5 = u*sqrt(u) for u>0 (0 otherwise); f'(u) = 1.5*sqrt(u) for u>0 (0 otherwise).
+// No domain restriction needed: both are well-defined, including at u=0, for the usual test profile.
+static inline double flux(double u) { return (u > 0.0) ? u * std::sqrt(u) : 0.0; }
+static inline double cpu_fprime_abs(double u) { return (u > 0.0) ? 1.5 * std::sqrt(u) : 0.0; }
+#elif defined(CPU_FLUX_LOG)
+// f(u) = ln(u); f'(u) = 1/u. Only defined for u>0 - ln(0) is -infinity, so this flux needs a
+// strictly-positive test profile (bench_all_log.py shifts the usual initial condition up by
+// 0.1). The u<=0 fallback below only matters if that profile guarantee is violated.
+static inline double flux(double u) { return (u > 0.0) ? std::log(u) : 0.0; }
+static inline double cpu_fprime_abs(double u) { return (u > 0.0) ? 1.0 / u : 0.0; }
 #else
 static inline double flux(double u) { return 0.5 * u * u; }
 static inline double cpu_fprime_abs(double u) { return std::fabs(u); }   // Burgers: |f'(u)| = |u|

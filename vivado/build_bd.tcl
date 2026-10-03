@@ -18,7 +18,7 @@ set ip_repo  D:/v/ip
 set out_dir  D:/v/out
 # PL clock in MHz. 150 MHz = IOPLL/10 (the PS also offers 100 = /15 and 187.5 = /8).
 set pl_mhz 150
-set out_name tv_cfl_buckley150   ;# output file base name in $out_dir
+set out_name tv_cfl_log150   ;# output file base name in $out_dir
 set do_bitstream [expr {[lsearch $argv bitstream] >= 0}]
 
 # "coherent" on the command line: attach the kernel to the PS cache-coherent port HPC0 instead of the

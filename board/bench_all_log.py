@@ -1,0 +1,151 @@
+# bench_all_log.py - same benchmark as bench_all.py, but for the Log flux.
+# Chosen to isolate whether Buckley-Leverett's win came from its division specifically, or
+# from the extra multiplies surrounding it: |f'(u)| = 1/u is a single division and nothing else.
+# Needs a strictly-positive profile (see make_u0 below) since ln(u) is undefined at u=0.
+#
+# Run on the Ultra96 (PYNQ 2.4, Python 3.6) from a Jupyter Terminal:
+#   python3 bench_all_log.py tv_cfl_log150.bit 150
+#
+# Needs bench_e2e.cpp (compiled here WITH -DCPU_FLUX_LOG) and the Log bitstream pair.
+# Not tested on hardware yet.
+
+# %% Cell 1: settings, compile the C++ library (Log CPU math), load the bitstream
+import os, sys, ctypes, subprocess, csv
+import numpy as np
+from pynq import Overlay, Xlnk, Clocks, Bitstream
+
+BIT_NAME = "tv_cfl_log150.bit"
+PL_MHZ = 150.0
+if len(sys.argv) > 2 and sys.argv[1].endswith(".bit"):
+    BIT_NAME, PL_MHZ = sys.argv[1], float(sys.argv[2])
+BASE = 0xA0000000
+
+print(subprocess.check_output(
+    ["g++", "-O3", "-std=c++14", "-fopenmp", "-DCPU_FLUX_LOG", "-shared", "-fPIC",
+     "bench_e2e.cpp", "-o", "libbench_log.so"],
+    stderr=subprocess.STDOUT, universal_newlines=True) or "libbench_log.so built")
+
+BIT = os.path.abspath(BIT_NAME)
+try:
+    ol = Overlay(BIT)
+    print("Overlay loaded:", list(ol.ip_dict.keys()))
+except Exception as e:
+    print("Overlay() failed:", repr(e), "-> plain download")
+    Bitstream(BIT).download()
+Clocks.fclk0_mhz = PL_MHZ
+print("PL clock:", Clocks.fclk0_mhz, "MHz")
+
+lib = ctypes.CDLL(os.path.abspath("libbench_log.so"))
+dp = ctypes.POINTER(ctypes.c_double)
+lib.fpga_init.argtypes = [ctypes.c_uint64]
+lib.fpga_init.restype = ctypes.c_int
+lib.bench_cpu_step.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, dp, dp, ctypes.c_double, ctypes.c_double]
+lib.bench_cpu_step.restype = ctypes.c_double
+lib.bench_cpu_check.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, dp, ctypes.c_double, ctypes.c_double]
+lib.bench_cpu_check.restype = ctypes.c_double
+lib.bench_fpga_check.argtypes = [ctypes.c_int, ctypes.c_int, dp, ctypes.c_uint64, dp, ctypes.c_uint64,
+                                 ctypes.c_double, ctypes.c_double, ctypes.c_int]
+lib.bench_fpga_check.restype = ctypes.c_double
+lib.bench_iter.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_double, ctypes.c_double,
+                           dp, ctypes.c_uint64, dp, ctypes.c_uint64, dp, ctypes.c_uint64, ctypes.c_int, dp]
+lib.bench_iter.restype = ctypes.c_double
+rc = lib.fpga_init(BASE)
+print("fpga_init:", rc, "(0 = registers mapped)")
+
+# %% Cell 2: buffers and the initial condition
+NMAX = 131072
+xlnk = Xlnk()
+CACHEABLE = 1
+try:
+    ub = [xlnk.cma_array(shape=(NMAX + 2,), dtype=np.float64, cacheable=1) for _ in range(2)]
+except Exception as e:
+    print("cacheable buffers not available (%r): using uncached ones - CPU numbers will be pessimistic" % (e,))
+    CACHEABLE = 0
+    ub = [xlnk.cma_array(shape=(NMAX + 2,), dtype=np.float64) for _ in range(2)]
+res = xlnk.cma_array(shape=(2,), dtype=np.float64)
+print("cacheable u buffers:", bool(CACHEABLE), "| physical:", hex(ub[0].physical_address), hex(ub[1].physical_address))
+
+def P(a):
+    return ctypes.cast(a.ctypes.data, dp)
+
+def init_state(N):
+    x = np.linspace(0.0, 38.0, N)
+    ub[0][:N] = make_u0(x)
+    ub[1][:N] = 0.0
+    if hasattr(ub[0], "flush"):
+        ub[0].flush()
+
+def log_fprime_abs(u):
+    return np.where(u > 0.0, 1.0 / np.where(u > 0.0, u, 1.0), 0.0)
+
+def make_u0(x):
+    # ln(u) is undefined at u=0, so this flux needs a strictly-positive profile: the usual
+    # initial condition shifted up by 0.1 (min ~0.1, same shape otherwise).
+    return 0.1 + np.where(x < 15.01, -0.015 * x * (x - 15.0), 0.0)
+
+# %% Cell 3: run everything and print the table
+def run_size(N, steps):
+    dx = 38.0 / (N - 1)
+    x = np.linspace(0.0, 38.0, N)
+    u0 = make_u0(x)
+    m = float(np.max(log_fprime_abs(u0)))      # max |f'(u)| over THIS initial profile
+    dt = 0.5 * dx / m                             # CFL about 0.5, so the run is stable (no violations)
+    init_state(N)
+    r = {"N": N, "steps": steps, "dt": dt, "max_fprime_abs": m}
+    for th in (1, 2, 4):
+        r["cpu_step_us_%dT" % th] = lib.bench_cpu_step(N, th, 30, P(ub[0]), P(ub[1]), dt, dx)
+    for th in (1, 2, 4):
+        r["cpu_check_us_%dT" % th] = lib.bench_cpu_check(N, th, 30, P(ub[0]), dt, dx)
+    if hasattr(ub[0], "flush"):
+        ub[0].flush()
+    r["fpga_check_us"] = lib.bench_fpga_check(N, 30, P(ub[0]), ub[0].physical_address, P(res),
+                                              res.physical_address, dt, dx, CACHEABLE)
+    checks = []
+    for mode, name in ((0, "cpu_only"), (1, "fpga_sync"), (2, "fpga_overlap")):
+        for th in (1, 2, 4):
+            init_state(N)
+            out = (ctypes.c_double * 6)()
+            ms = lib.bench_iter(mode, th, N, steps, dt, dx, P(ub[0]), ub[0].physical_address,
+                                P(ub[1]), ub[1].physical_address, P(res), res.physical_address, CACHEABLE, out)
+            r["%s_ms_%dT" % (name, th)] = ms
+            checks.append((name, th, out[0], out[1], out[2], out[3], out[4], int(out[5])))
+    r["_checks"] = checks
+    return r
+
+results = [run_size(10000, 400), run_size(100000, 150)]
+
+def fmt(x):
+    return "%10.1f" % x if x >= 0 else "     ERROR(%d)" % x
+
+print("\nPL clock %.1f MHz | bitstream %s | cacheable buffers: %s | flux: Log" % (
+    Clocks.fclk0_mhz, BIT_NAME, bool(CACHEABLE)))
+for r in results:
+    print("\n=== N = %d (%d timed steps per run, dt=%.6g for CFL~0.5) ===" % (r["N"], r["steps"], r["dt"]))
+    print("Check only (us per call):   FPGA %s | CPU 1T %s | CPU 2T %s | CPU 4T %s" % (
+        fmt(r["fpga_check_us"]), fmt(r["cpu_check_us_1T"]), fmt(r["cpu_check_us_2T"]), fmt(r["cpu_check_us_4T"])))
+    print("Step only  (us per call):   CPU 1T %s | CPU 2T %s | CPU 4T %s" % (
+        fmt(r["cpu_step_us_1T"]), fmt(r["cpu_step_us_2T"]), fmt(r["cpu_step_us_4T"])))
+    print("Whole iteration (ms/step)     1 thread   2 threads   4 threads")
+    for name in ("cpu_only", "fpga_sync", "fpga_overlap"):
+        print("  %-14s %10.3f %10.3f %10.3f" % (name, r[name + "_ms_1T"], r[name + "_ms_2T"], r[name + "_ms_4T"]))
+    ref = [c for c in r["_checks"] if c[0] == "cpu_only" and c[1] == 1][0][2]
+    same = all(abs(c[2] - ref) <= 1e-9 * abs(ref) for c in r["_checks"])
+    fp = [c for c in r["_checks"] if c[0] != "cpu_only"]
+    tv_ok = all(abs(c[3] - c[5]) <= 1e-9 * abs(c[5]) for c in fp)
+    cfl_ok = all(abs(c[4] - c[6]) <= 1e-9 * abs(c[6]) for c in fp)
+    viol = sum(c[7] for c in r["_checks"])
+    print("  sanity: same final state in every mode: %s | FPGA TV matches CPU: %s | FPGA CFL matches CPU: %s | violations flagged: %d"
+          % (same, tv_ok, cfl_ok, viol))
+    if r["cpu_only_ms_4T"] > 0 and r["fpga_overlap_ms_4T"] > 0:
+        speedup4t = r["cpu_only_ms_4T"] / r["fpga_overlap_ms_4T"]
+        print("  FPGA-overlap vs CPU-only, 4 threads: %.3fx %s"
+              % (speedup4t, "(FPGA faster)" if speedup4t > 1 else "(CPU-only faster)"))
+
+csv_name = "bench_%s_%dMHz.csv" % (BIT_NAME.replace(".bit", ""), int(Clocks.fclk0_mhz))
+with open(csv_name, "w") as f:
+    w = csv.writer(f)
+    keys = [k for k in results[0].keys() if not k.startswith("_")]
+    w.writerow(keys)
+    for r in results:
+        w.writerow([r[k] for k in keys])
+print("\nwrote", csv_name)

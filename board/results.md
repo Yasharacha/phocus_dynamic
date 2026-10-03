@@ -5,15 +5,21 @@
 - **Burgers** (cheapest flux): after fixing an inefficiency in the CPU-side benchmark code,
   **plain CPU-only beats the FPGA at 4 threads** (by 9-44%, depending on N). The FPGA only wins
   at 1-2 threads.
-- **Buckley-Leverett** (heaviest flux, division in the CFL formula): **the FPGA wins at every
-  thread count**, by 1.41-1.62x, including at 4 threads.
-- **Mechanism, confirmed with real numbers on both fluxes:** the FPGA kernel's check time is
-  essentially **flux-independent** (~337 us at N=100k/150MHz for both Burgers and
-  Buckley-Leverett, within 0.1%), because it is a fully pipelined design - one element per clock
-  regardless of whether that clock's arithmetic is a subtract or a division. The CPU-side check
-  is **flux-dependent**: it scaled from 297 us (Burgers, 4T) to 1048 us (Buckley-Leverett, 4T),
-  a 3.5x increase, because it actually has to execute the heavier formula N times on real cycles.
-  This is why a cheap flux lets a fast CPU win, and a heavy flux hands the win to the FPGA.
+- **Buckley-Leverett** (heaviest flux, division plus ~6-7 ops in the CFL formula): **the FPGA
+  wins at every thread count**, by 1.41-1.62x.
+- **Flood wave** (a single square root): FPGA wins at every thread count, by **1.32-1.50x** -
+  solidly, though a bit less than Buckley-Leverett.
+- **Log** (a single division): FPGA wins, but only barely - **1.04-1.06x** - because `ln(u)`
+  (used by the *step*, not the check) is so expensive that the check is a tiny slice of the
+  total iteration, capping how much hiding it can possibly help. See Part 4.
+- **Mechanism, confirmed across all four fluxes:** the FPGA kernel's check time is essentially
+  **flux-independent** (~337 us at N=100k/150MHz for all four, within noise), because it is a
+  fully pipelined design - one element per clock regardless of whether that clock's arithmetic is
+  a subtract, a square root, or a division. The CPU-side check is **flux-dependent**: it scaled
+  from 297 us (Burgers, 4T) to 1048 us (Buckley-Leverett, 4T), a 3.5x increase, because it
+  actually has to execute the heavier formula N times on real cycles. This is why a cheap flux
+  lets a fast CPU win, and a heavy flux hands the win to the FPGA - see Part 5 for the full
+  four-flux comparison and the one case (Log) where it's more subtle than that.
 
 Hardware: Ultra96 (ZU3EG). CPU: 4x Cortex-A53 at 1.2 GHz. FPGA clock (PL) as listed per section.
 Lax-Friedrichs, periodic, `double`, N = 10,000 and 100,000. Timestep chosen so CFL is about 0.5
@@ -269,24 +275,217 @@ choosing it for production use, independent of the FPGA question.
 
 ---
 
+# Part 3: Flood wave flux (`f(u) = max(u,0)^1.5`, `|f'(u)| = 1.5*sqrt(u)` for `u>0`)
+
+## 3.1 Why this flux
+
+A middle case between Burgers (trivial check) and Buckley-Leverett (division plus ~6-7
+surrounding ops): `|f'(u)|` here is **one square root and nothing else**. Chosen to test whether
+a single expensive operation, on its own, is enough to flip the result - without Buckley-
+Leverett's extra multiply/add cluster around it. No domain restriction is needed: both `f(u)` and
+`f'(u)` are well-defined at `u=0` (the usual test profile touches 0 and even dips to about
+`-0.0018` at the boundary from floating-point rounding; both sides guard `u>0` identically, so
+this is handled consistently, not a bug).
+
+## 3.2 Kernel build
+
+| | Result |
+|---|---|
+| Pipelining | Target II=1, achieved II=1 |
+| Pipeline depth | 71 cycles (two 57-cycle square roots - one per element/clock in the 2-wide kernel) |
+| Routed timing | +1.289 ns slack at 148.148 MHz target - "All user specified timing constraints are met" |
+| DSPs | 45 / 360 (12%) |
+| LUTs | 20,993 / 70,560 (29.75%) |
+| Flip-flops | 26,638 / 141,120 (18.88%) |
+
+Verified in C-sim and against an independent reference (step and check, N = 2-20,001, 1-4
+threads) before running on the board.
+
+## 3.3 Results (150 MHz, wide kernel)
+
+**The check alone (us per call):**
+
+| N | FPGA | CPU 1T | CPU 2T | CPU 4T |
+|---|---|---|---|---|
+| 10,000 | 37.2 | 200.2 | 146.3 | 85.3 |
+| 100,000 | 337.3 | 1998.0 | 1439.3 | **837.7** |
+
+**Whole iteration (ms/step):**
+
+| N | Mode | 1T | 2T | 4T |
+|---|---|---|---|---|
+| 10,000 | CPU only | 0.557 | 0.414 | 0.241 |
+| | FPGA overlapped | 0.397 | 0.300 | **0.183** |
+| 100,000 | CPU only | 5.456 | 4.131 | 2.437 |
+| | FPGA overlapped | 3.635 | 2.819 | **1.758** |
+
+**FPGA-overlap speed-up vs. CPU-only, every thread count:**
+
+| N | 1T | 2T | 4T |
+|---|---|---|---|
+| 10,000 | 1.40x | 1.38x | **1.32x** |
+| 100,000 | 1.50x | 1.47x | **1.39x** |
+
+Sanity checks passed on real hardware: same final state in every mode, FPGA TV and CFL matched
+the CPU's, no violations flagged.
+
+A solid win at every thread count - a bit smaller than Buckley-Leverett's (1.41-1.62x), consistent
+with a single square root being less CPU-expensive than a division plus six extra multiplies/adds.
+
+---
+
+# Part 4: Log flux (`f(u) = ln(u)`, `|f'(u)| = 1/u` for `u>0`)
+
+## 4.1 Why this flux, and a profile change it needed
+
+Chosen to isolate whether Buckley-Leverett's win came from the division itself or from its
+surrounding arithmetic: `|f'(u)| = 1/u` is **one division and nothing else**. Unlike the other
+three fluxes, `ln(u)` is undefined at `u=0`, and the usual test profile touches exactly 0 - so
+this flux's CPU-side benchmark uses the usual profile shifted up by 0.1 (min ~0.098, same shape
+otherwise). This only affects the CPU-side driver script; the HLS kernel is unaffected, since it
+only ever computes `f'(u) = 1/u` (already guarded for `u<=0`), never `ln(u)` itself.
+
+## 4.2 Kernel build
+
+| | Result |
+|---|---|
+| Pipelining | Target II=1, achieved II=1 |
+| Pipeline depth | 46 cycles (two 40-cycle dividers - one per element/clock) |
+| Routed timing | +1.866 ns slack at 148.148 MHz target - the most margin of all four kernels built |
+| DSPs | 23 / 360 (6%) |
+| LUTs | 20,697 / 70,560 (29.33%) |
+| Flip-flops | 22,768 / 141,120 (16.13%) |
+
+Verified in C-sim and against an independent reference (step and check, N = 2-20,001, 1-4
+threads, on the shifted profile) before running on the board.
+
+## 4.3 Results (150 MHz, wide kernel)
+
+**The check alone (us per call):**
+
+| N | FPGA | CPU 1T | CPU 2T | CPU 4T |
+|---|---|---|---|---|
+| 10,000 | 37.0 | 272.2 | 120.8 | 61.3 |
+| 100,000 | 337.1 | 2716.8 | 1190.4 | **596.3** |
+
+The check alone is a clear FPGA win here - **1.77x faster than the 4-thread CPU at N=100k**
+(596.3 vs. 337.1 us), comparable in spirit to Flood wave's check-alone margin.
+
+**But the step is enormous** (`ln(u)` called twice per point by the solver step):
+
+| N=100,000 | CPU step, 4T | CPU check, 4T |
+|---|---|---|
+| | **8701.7 us** | 596.3 us |
+
+**Whole iteration (ms/step):**
+
+| N | Mode | 1T | 2T | 4T |
+|---|---|---|---|---|
+| 10,000 | CPU only | 3.633 | 1.866 | 0.937 |
+| | FPGA overlapped | 3.476 | 1.779 | **0.903** |
+| 100,000 | CPU only | 36.557 | 18.552 | 9.347 |
+| | FPGA overlapped | 34.379 | 17.520 | **8.905** |
+
+**FPGA-overlap speed-up vs. CPU-only:**
+
+| N | 1T | 2T | 4T |
+|---|---|---|---|
+| 10,000 | 1.05x | 1.05x | **1.04x** |
+| 100,000 | 1.06x | 1.06x | **1.05x** |
+
+Sanity checks passed on real hardware: same final state in every mode, FPGA TV and CFL matched
+the CPU's, no violations flagged. FPGA still wins, but only barely - see 4.4 for why.
+
+## 4.4 Why a 1.77x faster check barely moves the whole iteration
+
+The overlapped iteration time is roughly `max(step, check) + overhead`. Once the check is fully
+hidden behind the step (true here: 337 us FPGA check vs. 8702 us CPU step), the *most* overlap can
+ever save is however large a share of the total the check used to occupy in CPU-only mode:
+
+| Flux | CPU step, 4T | CPU check, 4T | Check's share of the CPU-only iteration |
+|---|---|---|---|
+| Burgers | 335 us | 297 us | 47% |
+| Buckley-Leverett | 1631 us | 1048 us | 39% |
+| Flood wave | 1567 us | 838 us | 35% |
+| **Log** | **8702 us** | 596 us | **6%** |
+
+For Log, that ceiling is about 6% - almost exactly the 4-6% speed-up actually measured. The check
+genuinely got 1.77x faster on the FPGA; it just never mattered much, because `ln(u)` made the step
+so dominant that the check was a small slice of the pie to begin with.
+
+**Why is the step/check cost gap so much bigger for Log than the other three?** Subtracting the
+Burgers baseline (both `f(u)` and `f'(u)` trivial) isolates each flux's own cost:
+
+| Flux | Step extra (≈ cost of `f(u)`) | Check extra (≈ cost of `f'(u)`) | f(u) is how many x costlier than f'(u) |
+|---|---|---|---|
+| Buckley-Leverett | 1296 us | 751 us | 1.7x |
+| Flood wave | 1232 us | 541 us | 2.3x |
+| **Log** | **8367 us** | 299 us | **28x** |
+
+Buckley-Leverett and Flood wave's `f(u)` and `f'(u)` are built from the same family of operations
+(multiplies/adds plus at most one division or square root), so differentiating doesn't change
+their computational class - the derivative of a power-law/rational function is another function
+of similar complexity. `ln(u)` is different in kind: it's a transcendental function, computed via
+range reduction plus a polynomial/rational approximation in the math library, far costlier than a
+single hardware divide. Its derivative, `1/u`, happens to collapse to one of the *cheapest*
+possible operations - a special property of the natural logarithm, not something that generalizes
+to power-law fluxes. That mismatch between an expensive `f(u)` and a cheap `f'(u)` is unique to
+Log among the four fluxes tested, and it's the entire reason its real, measured check speedup
+(1.77x) translates into such a small whole-iteration speedup (1.05x).
+
+---
+
+# Part 5: Cross-flux comparison
+
+**4 threads, N = 100,000, all four fluxes, final numbers:**
+
+| Flux | `\|f'(u)\|` | Check: FPGA vs. CPU-4T | **Whole iteration: FPGA vs. CPU-only** |
+|---|---|---|---|
+| Burgers | `\|u\|` | FPGA 1.13x **slower** | **CPU wins, 1.13x** |
+| Log | `1/u` | FPGA 1.77x faster | FPGA wins, only **1.05x** |
+| Flood wave | `1.5*sqrt(u)` | FPGA 2.48x faster | FPGA wins, **1.39x** |
+| Buckley-Leverett | division + ~6 ops | FPGA 3.11x faster | FPGA wins, **1.52x** |
+
+The ranking is exactly what check-formula complexity predicts - cheaper check, more likely the CPU
+wins; heavier check, more likely the FPGA wins. Log is the outlier that reveals the full picture
+isn't *just* about `f'(u)`'s cost: the whole-iteration speed-up is capped by how large a share of
+the total iteration the check occupies, which also depends on `f(u)`'s cost (used only by the
+step). A flux can have a genuinely fast FPGA check and still show almost no end-to-end benefit, if
+its step is disproportionately expensive for unrelated reasons (here, a transcendental function).
+
+---
+
 # Overall conclusion
 
-The FPGA-assisted check is not universally faster or slower than the CPU - **it depends entirely
-on how expensive the flux's derivative is to evaluate.** For the cheapest flux in this project
-(Burgers), a modestly-optimized 4-thread CPU wins outright. For the most expensive one tested
-(Buckley-Leverett, with a division in its CFL formula), the FPGA wins clearly and consistently,
-because its pipelined arithmetic is insensitive to formula complexity in a way scalar CPU code
-never is. Log and flood-wave (also carrying a division or square root) would be expected to show
-a similar FPGA advantage, though this has not been measured.
+The FPGA-assisted check is not universally faster or slower than the CPU - **it depends on how
+expensive the flux's `f'(u)` (the check) is relative to the CPU's cycle budget, and separately, on
+how large a share of the total iteration that check represents**, which depends on `f(u)` (the
+step) too. Four fluxes spanning trivial to heavy were measured on real hardware:
+
+- **Burgers** (trivial check): 4-thread CPU wins outright, 1.13-1.44x.
+- **Log** (cheap check, but a transcendental step): FPGA wins, but barely, 1.04-1.06x - a fast
+  check diluted by an expensive, unrelated step.
+- **Flood wave** (one square root): FPGA wins solidly, 1.32-1.50x.
+- **Buckley-Leverett** (division plus several ops, the heaviest check): FPGA wins most clearly
+  and consistently, 1.41-1.62x.
+
+The FPGA's advantage comes from being a fully pipelined design whose per-element throughput is
+insensitive to formula complexity (always ~337 us at N=100k/150MHz, regardless of flux) - a
+property scalar CPU code can never have, since it genuinely executes however many cycles the
+formula needs, once per element, every time.
 
 ## Caveats
 
-- Only two fluxes, one data profile, N = 10k and 100k tested. Energy and CPU load were not measured.
+- Four fluxes, one data profile each, N = 10k and 100k tested. Energy and CPU load were not measured.
 - Run-to-run noise is about 6-9%; treat differences smaller than that with caution.
 - The DRAM-contention explanation for the Burgers step's overlapped-mode inflation (1.5) is a
   plausible mechanism supported by the pattern observed, not a directly measured/isolated cause.
+  Not re-tested for the other three fluxes.
 - The coherent-port attempt (1.4) is a genuine capability of this chip (documented in AMD's
   UG1085/DS925), just not one this project got working; it was not exhaustively debugged.
 - Stopping a real simulation run on a detected violation is not implemented - the benchmark only
   counts violations, it does not act on them. The one-step detection-lag bound (from the
   two-buffer overlapped design) is structural, not yet exercised end-to-end.
+- LWR, cubic, and trilinear (the three remaining, cheap fluxes) were not built or measured; based
+  on the mechanism confirmed here, they would be expected to pattern with Burgers (CPU wins at 4
+  threads), not with the three heavier fluxes.
